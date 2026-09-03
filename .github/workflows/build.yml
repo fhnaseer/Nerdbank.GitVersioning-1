@@ -13,11 +13,12 @@ env:
 
 jobs:
   build:
-    name: 🏭 Build (AV diag)
+    name: 🏭 Build (AV diag cc=${{ matrix.covver }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
+        covver: ['18.9.0', '18.11.0']
         attempt: [1, 2, 3]
 
     steps:
@@ -40,7 +41,7 @@ jobs:
       run: tools/variables/_define.ps1
       shell: pwsh
     - name: 🛠 build
-      run: dotnet build -t:build --no-restore -c ${{ env.BUILDCONFIGURATION }} -warnAsError -warnNotAsError:NU1901,NU1902,NU1903,NU1904 /bl:"${{ runner.temp }}/_artifacts/build_logs/build.binlog"
+      run: dotnet build -t:build -c ${{ env.BUILDCONFIGURATION }} /p:CodeCoverageVersion=${{ matrix.covver }} -warnAsError -warnNotAsError:NU1901,NU1902,NU1903,NU1904 /bl:"${{ runner.temp }}/_artifacts/build_logs/build.binlog"
 
     - name: 🔎 AV diag — environment
       shell: bash
@@ -56,21 +57,24 @@ jobs:
         echo '--- cgroup mem ---'; cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || true
         nproc; uname -a
         echo '--- coverage package versions ---'
+        echo "requested CodeCoverageVersion=${{ matrix.covver }}"
         find "$NUGET_PACKAGES" -maxdepth 2 -type d -iname '*codecoverage*' 2>/dev/null || true
 
     - name: 🧪 test WITH coverage (Linux forced) — repro loop
       shell: bash
       run: |
         set +e
-        for i in 1 2; do
-          echo "==================== coverage test iteration $i ===================="
+        crashed=0
+        for i in 1 2 3 4 5 6; do
+          echo "==================== cc=${{ matrix.covver }} coverage test iteration $i ===================="
           pwsh tools/dotnet-test-cloud.ps1 -Configuration ${{ env.BUILDCONFIGURATION }} -Agent ${{ runner.os }}
           rc=$?
           echo "iteration $i exit code: $rc"
-          if [ $rc -ne 0 ]; then echo "NON-ZERO (possible AV) on iteration $i"; break; fi
+          if [ $rc -ne 0 ]; then echo "NON-ZERO (possible AV) on cc=${{ matrix.covver }} iteration $i"; crashed=1; break; fi
         done
+        echo "REPRO_SUMMARY cc=${{ matrix.covver }} attempt=${{ matrix.attempt }} crashed=$crashed"
         exit 0
-      timeout-minutes: 25
+      timeout-minutes: 30
 
     - name: 🔎 AV diag — post-crash capture
       if: always()
@@ -86,10 +90,22 @@ jobs:
         echo '--- collector logs: mismatch / abandon / unmap / AV ---'
         grep -RniE 'buffer size mismatch|abandon (previous|current) stream|munmap|Could not unmap|CreateUnmanagedStream|AccessViolation|SIGBUS|SIGSEGV' "$A" 2>/dev/null | head -120 || echo '(no matches)'
         echo '--- native crash reports ---'
+        D="$A/av_diag"; mkdir -p "$D"
         find "$A" \( -iname '*crashreport*' -o -iname '*crashdump*' -o -iname '*.dmp' \) 2>/dev/null | tee /tmp/crashfiles.txt
-        for f in $(grep -i 'json' /tmp/crashfiles.txt 2>/dev/null); do echo "== $f =="; grep -Eio 'SIGBUS|SIGSEGV|"signal_name"[^,]*|"signal"[^,]*|libCoverageInstrumentation|covrun|"native_module_name"[^,]*' "$f" | head -20; done
+        for f in $(grep -iE 'crashreport.*json$' /tmp/crashfiles.txt 2>/dev/null); do
+          echo "== $f =="
+          cp "$f" "$D/" 2>/dev/null || true
+          echo '-- signal / process --'
+          jq -r '{signal: (.payload.threads[]? | select(.crashed==true) | .signal), pid: .payload.process_info?.pid?}' "$f" 2>/dev/null | head -20 || true
+          echo '-- crashing thread native frames (top 25) --'
+          jq -r '.payload.threads[]? | select(.crashed==true) | .stack_frames[]? | [.native_address, .module_name, .method_name] | @tsv' "$f" 2>/dev/null | head -25 || true
+          echo '-- raw grep fallback --'
+          grep -Eio '"signal"[^,]*|"signal_name"[^,]*|libCoverageInstrumentation[^"]*|covrun[^"]*|"module_name":"[^"]*"' "$f" 2>/dev/null | sort | uniq -c | sort -rn | head -30 || true
+        done
         echo '--- test_logs listing ---'
         find "$A/test_logs" -maxdepth 2 -type f 2>/dev/null | head -60 || true
+        echo '--- drop large heap dumps to keep artifacts small (crashreport.json retained) ---'
+        find "$A" -iname '*.dmp' -size +20M -delete 2>/dev/null || true
 
     - name: 📢 Publish artifacts
       uses: ./.github/actions/publish-artifacts
