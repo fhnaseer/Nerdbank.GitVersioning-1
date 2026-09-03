@@ -3,10 +3,7 @@ name: 🏭 Build
 on:
   push:
     branches:
-    - main
-    - 'v*.*'
-    - validate/*
-  pull_request:
+    - 'fhnaseer/**'
   workflow_dispatch:
 
 env:
@@ -14,42 +11,25 @@ env:
   BUILDCONFIGURATION: Release
   NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages/
 
-# dotnetfoundation code signing
-
 jobs:
   build:
-    name: 🏭 Build
-
-    runs-on: ${{ matrix.os }}
+    name: 🏭 Build (AV diag)
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        os:
-        - ubuntu-24.04
-        - windows-2025
+        attempt: [1, 2, 3]
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
-        fetch-depth: 0 # avoid shallow clone so nbgv can do its work.
+        fetch-depth: 0
         submodules: true
     - name: ⚙ Install prerequisites
       run: |
         ./init.ps1 -UpgradePrerequisites -NoNuGetCredProvider
         dotnet --info
-
-        # Print mono version if it is present.
-        if (Get-Command mono -ErrorAction SilentlyContinue) {
-          mono --version
-        }
       shell: pwsh
-    - name: ⚙ Install 32-bit .NET SDK and runtimes
-      shell: pwsh
-      run: |
-        $globalJson = Get-Content global.json | ConvertFrom-Json
-        Invoke-WebRequest -Uri "https://dot.net/v1/dotnet-install.ps1" -OutFile dotnet-install.ps1
-        & .\dotnet-install.ps1 -Architecture x86 -Version $globalJson.sdk.version -InstallDir "C:\Program Files (x86)\dotnet\" -NoPath -Verbose
-      if: runner.os == 'Windows'
     - name: ⚙ Install node.js
       uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
@@ -60,278 +40,57 @@ jobs:
       run: tools/variables/_define.ps1
       shell: pwsh
     - name: 🛠 build
-      run: dotnet build -t:build,pack --no-restore -c ${{ env.BUILDCONFIGURATION }} -warnAsError -warnNotAsError:NU1901,NU1902,NU1903,NU1904 /bl:"${{ runner.temp }}/_artifacts/build_logs/build.binlog"
-    - name: 🛠️ Build LKG package
-      run: dotnet pack -c ${{ env.BUILDCONFIGURATION }} --no-build -p:PackLKG=true /bl:"${{ runner.temp }}/_artifacts/build_logs/msbuild_lkg.binlog"
-      working-directory: src/Nerdbank.GitVersioning.Tasks
-    - name: 📢 Publish nbgv tool
-      shell: pwsh
-      run: |
-        dotnet publish -f net8.0 -c ${{ env.BUILDCONFIGURATION }} -o ../nerdbank-gitversioning.npm/out/nbgv.cli/tools/net8.0/any /bl:"${{ runner.temp }}/_artifacts/build_logs/nbgv_publish_net8.binlog"
-        dotnet publish -f net9.0 -c ${{ env.BUILDCONFIGURATION }} -o ../nerdbank-gitversioning.npm/out/nbgv.cli/tools/net9.0/any /bl:"${{ runner.temp }}/_artifacts/build_logs/nbgv_publish_net9.binlog"
-        dotnet publish -f net10.0 -c ${{ env.BUILDCONFIGURATION }} -o ../nerdbank-gitversioning.npm/out/nbgv.cli/tools/net10.0/any /bl:"${{ runner.temp }}/_artifacts/build_logs/nbgv_publish_net10.binlog"
-      working-directory: src/nbgv
-    - name: 🛠️ Build nerdbank-gitversioning NPM package
-      run: yarn build
-      working-directory: src/nerdbank-gitversioning.npm
-    - name: Capture .git directory
-      shell: pwsh
-      run: |
-        md ${{ runner.temp }}\_artifacts\drop
-        7z a ${{ runner.temp }}\_artifacts\drop\nbgv.7z * -r
-        Write-Host "##vso[artifact.upload containerfolder=drop;artifactname=drop;]${{ runner.temp }}\_artifacts\drop"
-      if: failure() && runner.os == 'Windows'
-    - name: 🧪 test
-      run: |
-        Write-Host "⚙️ Configure git commit author for testing"
-        git config --global user.name ci
-        git config --global user.email me@ci.com
+      run: dotnet build -t:build --no-restore -c ${{ env.BUILDCONFIGURATION }} -warnAsError -warnNotAsError:NU1901,NU1902,NU1903,NU1904 /bl:"${{ runner.temp }}/_artifacts/build_logs/build.binlog"
 
-        Write-Host "🧪 Run tests"
-        # Code coverage instrumentation is disabled on Linux because the coverage engine's
-        # shared-memory probe buffers are unmapped while instrumented code is still writing to
-        # them, crashing the test host with an AccessViolationException.
-        # The Windows leg still uploads coverage to codecov.io.
-        $noCoverage = '${{ runner.os }}' -eq 'Linux'
-        tools/dotnet-test-cloud.ps1 -Configuration ${{ env.BUILDCONFIGURATION }} -Agent ${{ runner.os }} -PublishResults -NoCoverage:$noCoverage
-      shell: pwsh
-      timeout-minutes: 15
-    - name: 🧪 test x86
-      run: tools/dotnet-test-cloud.ps1 -Configuration ${{ env.BUILDCONFIGURATION }} -Agent ${{ runner.os }} -PublishResults -X86
-      if: success() && runner.os == 'Windows'
-    - name: 💅🏻 Verify formatted code
-      run: dotnet format --verify-no-changes --no-restore
-      shell: pwsh
-      if: runner.os == 'Linux'
-    - name: 📚 Verify docfx build
-      run: dotnet docfx docfx/docfx.json --warningsAsErrors --disableGitFeatures
-      if: runner.os == 'Linux'
-    - name: ⚙ Update pipeline variables based on build outputs
-      run: tools/variables/_define.ps1
-      shell: pwsh
+    - name: 🔎 AV diag — environment
+      shell: bash
+      run: |
+        set -x
+        T="${TMPDIR:-/tmp}"
+        echo "TMPDIR raw='${TMPDIR:-<unset>}'  effective='$T'"
+        findmnt -T "$T" || true
+        df -hT "$T" || true
+        echo '--- /proc/mounts (tmp & mnt) ---'; grep -E ' /tmp | /mnt ' /proc/mounts || true
+        free -h || true
+        echo '--- swap ---'; swapon --show || cat /proc/swaps || true
+        echo '--- cgroup mem ---'; cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || true
+        nproc; uname -a
+        echo '--- coverage package versions ---'
+        find "$NUGET_PACKAGES" -maxdepth 2 -type d -iname '*codecoverage*' 2>/dev/null || true
+
+    - name: 🧪 test WITH coverage (Linux forced) — repro loop
+      shell: bash
+      run: |
+        set +e
+        for i in 1 2; do
+          echo "==================== coverage test iteration $i ===================="
+          pwsh tools/dotnet-test-cloud.ps1 -Configuration ${{ env.BUILDCONFIGURATION }} -Agent ${{ runner.os }}
+          rc=$?
+          echo "iteration $i exit code: $rc"
+          if [ $rc -ne 0 ]; then echo "NON-ZERO (possible AV) on iteration $i"; break; fi
+        done
+        exit 0
+      timeout-minutes: 25
+
+    - name: 🔎 AV diag — post-crash capture
+      if: always()
+      shell: bash
+      run: |
+        set -x
+        A="$RUNNER_TEMP/_artifacts"
+        T="${TMPDIR:-/tmp}"
+        echo '--- leftover coverage buffer/data files in temp ---'
+        ls -la "$T" 2>/dev/null | grep -Ei 'MS.CC|Coverage|\.(b|d|u)[0-9a-f]' || echo '(none matched)'
+        echo '--- dmesg (traps/segfault/sig) ---'
+        { dmesg 2>/dev/null || sudo dmesg 2>/dev/null; } | grep -Ei 'trap|segfault|sig=|protection|testhost|dotnet|core dump' | tail -60 || echo '(dmesg unavailable)'
+        echo '--- collector logs: mismatch / abandon / unmap / AV ---'
+        grep -RniE 'buffer size mismatch|abandon (previous|current) stream|munmap|Could not unmap|CreateUnmanagedStream|AccessViolation|SIGBUS|SIGSEGV' "$A" 2>/dev/null | head -120 || echo '(no matches)'
+        echo '--- native crash reports ---'
+        find "$A" \( -iname '*crashreport*' -o -iname '*crashdump*' -o -iname '*.dmp' \) 2>/dev/null | tee /tmp/crashfiles.txt
+        for f in $(grep -i 'json' /tmp/crashfiles.txt 2>/dev/null); do echo "== $f =="; grep -Eio 'SIGBUS|SIGSEGV|"signal_name"[^,]*|"signal"[^,]*|libCoverageInstrumentation|covrun|"native_module_name"[^,]*' "$f" | head -20; done
+        echo '--- test_logs listing ---'
+        find "$A/test_logs" -maxdepth 2 -type f 2>/dev/null | head -60 || true
+
     - name: 📢 Publish artifacts
       uses: ./.github/actions/publish-artifacts
       if: cancelled() == false
-    - name: 📦 Push CI package
-      shell: pwsh
-      run: |
-        if ('${{ secrets.AZP_TOKEN }}') {
-          dotnet nuget add source https://pkgs.dev.azure.com/andrewarnott/OSS/_packaging/PublicCI/nuget/v3/index.json -n publicCI -u andrewarnott -p ${{ secrets.AZP_TOKEN }} --store-password-in-clear-text
-          dotnet nuget push ${{ runner.temp }}\_artifacts\deployables\*.nupkg -s publicCI -k x
-          dotnet nuget push ${{ runner.temp }}\_artifacts\deployables-LKG\*.nupkg -s publicCI -k x
-        }
-      if: success() && runner.os == 'Windows' && github.event_name != 'pull_request'
-      continue-on-error: true
-    - name: 📢 Publish code coverage results to codecov.io
-      run: |
-        if ('${{ secrets.CODECOV_TOKEN }}') {
-          ./tools/publish-CodeCov.ps1 -CodeCovToken '${{ secrets.CODECOV_TOKEN }}' -PathToCodeCoverage "${{ runner.temp }}/_artifacts/coverageResults" -Name "${{ runner.os }} Coverage Results" -Flags "${{ runner.os }}"
-        }
-      shell: pwsh
-      if: runner.os != 'Linux'
-      timeout-minutes: 3
-
-  required_status_checks:
-    name: Required status checks pass
-    needs:
-    - build
-    - functional_testing
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-    - name: Verify required jobs succeeded
-      run: |
-        test '${{ needs.build.result }}' = success
-        test '${{ needs.functional_testing.result }}' = success
-
-  functional_testing:
-    name: 🧪 Functional testing
-    needs: build
-    runs-on: ${{ matrix.os }}
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            container: mcr.microsoft.com/dotnet/sdk:8.0-jammy
-          - os: ubuntu-22.04
-            container: mcr.microsoft.com/dotnet/sdk:9.0-noble
-          - os: ubuntu-22.04
-            container: mcr.microsoft.com/dotnet/sdk:8.0
-          - os: ubuntu-22.04
-            container: mcr.microsoft.com/dotnet/sdk:9.0
-          - os: macos-14
-            container: ""
-
-    # This uses a matrix value for the container; macOS will have an empty string, which means no container.
-    container:
-      image: ${{ matrix.container }}
-      # GitHub Actions will ignore an empty image automatically.
-
-    steps:
-    - name: Show .NET SDK info
-      shell: pwsh
-      run: dotnet --info
-
-    - name: Download Build Artifacts
-      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-      with:
-        name: deployables-Windows
-        path: deployables
-
-    - name: Set up git username and email address
-      shell: pwsh
-      run: |
-        git config --global init.defaultBranch main
-        git config --global user.name ci
-        git config --global user.email me@ci.com
-
-    - name: Consume NB.GV from .NET build
-      shell: bash
-      run: >
-        PkgFileName=$(ls deployables/Nerdbank.GitVersioning.*nupkg)
-
-        NBGV_NuGetPackageVersion=$([[ $PkgFileName =~ Nerdbank.GitVersioning\.(.*)\.nupkg ]] && echo "${BASH_REMATCH[1]}")
-
-        echo "<configuration><packageSources><add key='local' value='deployables' /></packageSources></configuration>" > nuget.config &&
-        dotnet new classlib -o lib &&
-        cd lib &&
-        echo '{"version":"42.42"}' > version.json &&
-        git init &&
-        git add version.json &&
-        git commit -m "Initial commit" &&
-        mkdir lib && cd lib &&
-        for l in c# f# vb;
-        do
-          echo Testing language $l &&
-          dotnet new classlib -lang=$l &&
-          dotnet add package nerdbank.gitversioning -v $NBGV_NuGetPackageVersion &&
-          dotnet pack -c debug /p:TreatWarningsAsErrors=false &&
-          ls bin/debug/lib.42.42.1*.nupkg 1> /dev/null 2>&1 &&
-          rm -r *
-          if [ $? -ne 0 ]; then exit 1; fi
-        done
-
-    - name: Consume Cake.GitVersioning
-      shell: bash
-      run: >
-        PkgFileName=$(ls deployables/Cake.GitVersioning.*nupkg)
-
-        NBGV_NuGetPackageVersion=$([[ $PkgFileName =~ Cake.GitVersioning\.(.*)\.nupkg ]] && echo "${BASH_REMATCH[1]}")
-
-        echo $NBGV_NuGetPackageVersion
-
-        mkdir caketest &&
-        cd caketest &&
-        git init &&
-        dotnet new tool-manifest &&
-        dotnet tool install Cake.Tool
-
-        echo "#addin nuget:?package=Cake.GitVersioning&version=${NBGV_NuGetPackageVersion}&prerelease=true"
-
-        echo "#addin nuget:?package=Cake.GitVersioning&version=${NBGV_NuGetPackageVersion}&prerelease=true" > build.cake
-
-        echo "Information(GitVersioningGetVersion().Version.ToString());" >> build.cake
-
-        dotnet cake
-
-    - name: Use nbgv dotnet CLI tool
-      shell: bash
-      run: >
-        DOTNET_ROOT=$(dirname "$(realpath "$(command -v dotnet)")") &&
-        export DOTNET_ROOT &&
-        case "$(uname -m)" in
-          arm64) export DOTNET_ROOT_ARM64="$DOTNET_ROOT" ;;
-          x86_64) export DOTNET_ROOT_X64="$DOTNET_ROOT" ;;
-        esac &&
-        echo DOTNET_ROOT=$DOTNET_ROOT
-
-        PkgFileName=$(ls deployables/Nerdbank.GitVersioning.*nupkg)
-
-        NBGV_NuGetPackageVersion=$([[ $PkgFileName =~ Nerdbank.GitVersioning\.(.*)\.nupkg ]] && echo "${BASH_REMATCH[1]}")
-
-        dotnet tool install nbgv --tool-path . --version $NBGV_NuGetPackageVersion --add-source deployables-Windows &&
-        ./nbgv get-version -f json -p lib &&
-        ./nbgv get-version -f json -p lib | grep 42.42.1
-
-  perf_testing:
-    name: 🫏 Performance testing
-
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-        - os: ubuntu-24.04
-          repoDir: '~/git'
-        - os: windows-2025
-          repoDir: '${USERPROFILE}/source/repos'
-        - os: macos-14
-          repoDir: '~/git'
-
-    steps:
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      with:
-        fetch-depth: 0 # avoid shallow clone so nbgv can do its work.
-        submodules: true
-
-    - name: Install .NET SDK
-      uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-      with:
-        global-json-file: global.json
-
-    - name: Show .NET SDK info
-      run: dotnet --info
-
-    - name: Clone test repos
-      shell: bash
-      run: |
-        mkdir -p ${{ matrix.repoDir }}
-        git clone https://github.com/xunit/xunit ${{ matrix.repoDir }}/xunit
-        git clone https://github.com/gimlichael/Cuemon ${{ matrix.repoDir }}/Cuemon
-        git clone https://github.com/kerryjiang/SuperSocket ${{ matrix.repoDir }}/SuperSocket
-        git clone https://github.com/dotnet/Nerdbank.GitVersioning ${{ matrix.repoDir }}/Nerdbank.GitVersioning
-
-    - name: Build in Release mode
-      run: dotnet build -c Release
-      working-directory: test/Nerdbank.GitVersioning.Benchmarks
-
-    - name: Run benchmarks (packed)
-      run: dotnet run -c Release -f net9.0 --no-build -- --filter '*GetVersionBenchmarks*' --artifacts ${{ runner.temp }}/_artifacts//benchmarks/packed/${{ matrix.os }}
-      working-directory: test/Nerdbank.GitVersioning.Benchmarks
-
-    - name: Unpack Git repositories
-      shell: bash
-      run: |
-        cd ${{ matrix.repoDir }}/xunit
-        git unpack-objects < .git/objects/pack/*.pack
-
-        cd ${{ matrix.repoDir }}/Cuemon
-        git unpack-objects < .git/objects/pack/*.pack
-
-        cd ${{ matrix.repoDir }}/SuperSocket
-        git unpack-objects < .git/objects/pack/*.pack
-
-        cd ${{ matrix.repoDir }}/Nerdbank.GitVersioning
-        git unpack-objects < .git/objects/pack/*.pack
-
-    - name: Run benchmarks (unpacked)
-      run: dotnet run -c Release -f net9.0 --no-build -- --filter '*GetVersionBenchmarks*' --artifacts ${{ runner.temp }}/_artifacts//benchmarks/unpacked/${{ matrix.os }}
-      working-directory: test/Nerdbank.GitVersioning.Benchmarks
-
-    - name: Publish benchmarks artifacts
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-      with:
-        name: benchmarks-${{ matrix.os }}
-        path: ${{ runner.temp }}/_artifacts/benchmarks
-
-  docs:
-    name: 📃 Docs
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    - name: 🔗 Markup Link Checker (mlc)
-      uses: becheran/mlc@7ec24825cefe0c9c8c6bac48430e1f69e3ec356e # v1.2.0
-      with:
-        args: --do-not-warn-for-redirect-to https://learn.microsoft.com*,https://dotnet.microsoft.com/*,https://dev.azure.com/*,https://app.codecov.io/* -p docfx -i https://www.npmjs.com/package/*,https://get.dot.net/

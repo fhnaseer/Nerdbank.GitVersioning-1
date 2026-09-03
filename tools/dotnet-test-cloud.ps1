@@ -80,7 +80,7 @@ if ($isMTP) {
     $mtpArgs = @(
         ,'--diagnostic'
         ,'--diagnostic-output-directory',$testLogs
-        ,'--diagnostic-verbosity','Information'
+        ,'--diagnostic-verbosity','Trace'
         ,'--results-directory',$testLogs
     )
 
