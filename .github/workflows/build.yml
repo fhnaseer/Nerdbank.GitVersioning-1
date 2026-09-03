@@ -18,8 +18,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        covver: ['18.9.0', '18.11.0']
-        attempt: [1, 2, 3]
+        covver: ['18.10.0', '18.11.0']
+        attempt: [1, 2, 3, 4, 5]
 
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,7 +65,7 @@ jobs:
       run: |
         set +e
         crashed=0
-        for i in 1 2 3 4 5 6; do
+        for i in 1 2 3 4 5 6 7 8 9 10; do
           echo "==================== cc=${{ matrix.covver }} coverage test iteration $i ===================="
           pwsh tools/dotnet-test-cloud.ps1 -Configuration ${{ env.BUILDCONFIGURATION }} -Agent ${{ runner.os }}
           rc=$?
