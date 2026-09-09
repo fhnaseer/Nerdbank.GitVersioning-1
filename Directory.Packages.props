@@ -11,6 +11,7 @@
     <!-- LibGit2Sharp Native Binary version - used in both main project and Cake addin -->
     <LibGit2SharpNativeVersion>2.0.324</LibGit2SharpNativeVersion>
   </PropertyGroup>
+
   <ItemGroup>
     <PackageVersion Include="BenchmarkDotNet.Diagnostics.Windows" Version="$(BenchmarkDotNetVersion)" />
     <PackageVersion Include="BenchmarkDotNet" Version="$(BenchmarkDotNetVersion)" />
